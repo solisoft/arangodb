@@ -30,6 +30,7 @@ const _ = require('lodash');
 const internal = require('internal');
 const fs = require('fs');
 const yaml = require('js-yaml');
+const arangosh = require('@arangodb/arangosh');
 const pu = require('@arangodb/testutils/process-utils');
 const tu = require('@arangodb/testutils/test-utils');
 const rp = require('@arangodb/testutils/result-processing');
@@ -199,6 +200,19 @@ class instanceManager {
         arangod.setThisConnectionHandle();
       }
     });
+  }
+  setPassvoid() {
+    if (!arango.isConnected()) {
+      throw new Error('connecting the database failed');
+    }
+    try {
+      return require('org/arangodb/users').save(this.options.username, this.options.password);
+    } catch (ex) {
+      if (ex.errorNum === errors.ERROR_USER_DUPLICATE.code) {
+        return require('org/arangodb/users').update(this.options.username, this.options.password);
+      }
+      throw ex;
+    }
   }
   getTypeToUrlsMap() {
     let ret = new Map();
@@ -534,6 +548,10 @@ class instanceManager {
   // //////////////////////////////////////////////////////////////////////////////
 
   waitOnServerForGC (instanceInfo, options, waitTime) {
+    let baseUrl = this.url;
+    if (instanceInfo !== undefined) {
+      baseUrl = instanceInfo.url;
+    }
     try {
       print(Date() + ' waiting ' + waitTime + ' for server GC');
       const remoteCommand = 'require("internal").wait(' + waitTime + ', true);';
@@ -543,7 +561,7 @@ class instanceManager {
       requestOptions.returnBodyOnError = true;
 
       const reply = download(
-        instanceInfo.url + '/_admin/execute?returnAsJSON=true',
+        baseUrl + '/_admin/execute?returnAsJSON=true',
         remoteCommand,
         requestOptions);
 
@@ -824,7 +842,10 @@ class instanceManager {
     }
     this.setEndpoints();
     this.printProcessInfo(startTime);
-    sleep(this.options.sleepBeforeStart);
+    if (this.options.sleepBeforeStart > 0) {
+      console.log("sleeping for " + this.options.sleepBeforeStart);
+      sleep(this.options.sleepBeforeStart);
+    }
     this.spawnClusterHealthMonitor();
     if (this.options.cluster) {
       this.reconnect();
@@ -1140,6 +1161,25 @@ class instanceManager {
       }
     });
   }
+
+  stopServerWaitFailed(urlIDOrShortName) {
+    this.arangods.forEach(arangod => {
+      if (!arangod.matches(instanceRole.dbServer, urlIDOrShortName)) {
+        return;
+      }
+      arangod.suspend();
+    });
+    this.agencyMgr.waitFor(() => { this.agencyMgr.serverFailed(urlIDOrShortName); });
+  }
+  continueServerWaitOk(urlIDOrShortName) {
+    this.arangods.forEach(arangod => {
+      if (urlIDOrShortName !== undefined && !arangod.matches(instanceRole.dbServer, urlIDOrShortName)) {
+        return;
+      }
+      arangod.resume();
+    });
+    this.agencyMgr.waitFor(() => { this.agencyMgr.serverHealthy(urlIDOrShortName); });
+  }
   // //////////////////////////////////////////////////////////////////////////////
   // / @brief checks whether any instance has failure points set
   // //////////////////////////////////////////////////////////////////////////////
@@ -1248,6 +1288,18 @@ class instanceManager {
     }
   }
 
+  setLeader(database, logId, newLeader) {
+    const res = arango.POST_RAW(`/_db/${database}/_api/log/${logId}/leader/${newLeader}`, '');
+    arangosh.checkRequestResult(res);
+    return res.result;
+  }
+
+  unsetLeader(database, logId) {
+    const res = arango.DELETE(`/_db/${database}/_api/log/${logId}/leader`);
+    arangosh.checkRequestResult(res);
+    return res.result;
+  }
+  
   /////////////////////////////////////////////////////////////////////////////////////////
   /////////////////////////////////////////////////////////////////////////////////////////
   /////////////////////////////////////////////////////////////////////////////////////////

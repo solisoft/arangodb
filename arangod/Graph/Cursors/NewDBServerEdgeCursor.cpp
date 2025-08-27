@@ -54,6 +54,38 @@ bool CheckInaccessible(transaction::Methods* trx, VPackSlice edge) {
   return trx->isInaccessibleCollection(str.substr(0, pos));
 }
 #endif
+
+uint16_t getCoveringPosition(std::shared_ptr<Index> const& index,
+                             TRI_edge_direction_e direction,
+                             ResourceMonitor& monitor) {
+  // projections we want to cover
+  std::vector<aql::AttributeNamePath> paths = {};
+  paths.emplace_back(
+      aql::AttributeNamePath({StaticStrings::FromString}, monitor));
+  paths.emplace_back(
+      aql::AttributeNamePath({StaticStrings::ToString}, monitor));
+  aql::Projections edgeProjections(std::move(paths));
+
+  if (not index->covers(edgeProjections)) {
+    return aql::Projections::kNoCoveringIndexPosition;
+  }
+
+  // find opposite attribute
+  edgeProjections.setCoveringContext(index->collection().id(), index);
+
+  TRI_ASSERT(direction == TRI_EDGE_IN || direction == TRI_EDGE_OUT);
+
+  uint16_t coveringPosition = aql::Projections::kNoCoveringIndexPosition;
+  if (direction == TRI_EDGE_OUT) {
+    coveringPosition = edgeProjections.coveringIndexPosition(
+        aql::AttributeNamePath::Type::ToAttribute);
+  } else {
+    coveringPosition = edgeProjections.coveringIndexPosition(
+        aql::AttributeNamePath::Type::FromAttribute);
+  }
+  TRI_ASSERT(aql::Projections::isCoveringIndexPosition(coveringPosition));
+  return coveringPosition;
+}
 }  // namespace
 
 auto arangodb::graph::createCollectionIndexCursors(
@@ -63,49 +95,24 @@ auto arangodb::graph::createCollectionIndexCursors(
     -> std::vector<std::vector<CollectionIndexCursor>> {
   std::vector<std::vector<CollectionIndexCursor>> cursors;
   cursors.resize(lookupInfos.size());
-  size_t count = 0;
+  size_t infoCount = 0;
   for (auto const& info : lookupInfos) {
     std::vector<CollectionIndexCursor> cursorsForOneCollection;
     cursorsForOneCollection.reserve(info.idxHandles.size());
 
     for (std::shared_ptr<Index> const& index : info.idxHandles) {
-      // compute covering index position
-      uint16_t coveringPosition = aql::Projections::kNoCoveringIndexPosition;
-      // projections we want to cover
-      std::vector<aql::AttributeNamePath> paths = {};
-      paths.emplace_back(
-          aql::AttributeNamePath({StaticStrings::FromString}, monitor));
-      paths.emplace_back(
-          aql::AttributeNamePath({StaticStrings::ToString}, monitor));
-      aql::Projections edgeProjections(std::move(paths));
-
-      if (index->covers(edgeProjections)) {
-        // find opposite attribute
-        edgeProjections.setCoveringContext(index->collection().id(), index);
-
-        TRI_edge_direction_e dir = info.direction;
-        TRI_ASSERT(dir == TRI_EDGE_IN || dir == TRI_EDGE_OUT);
-
-        if (dir == TRI_EDGE_OUT) {
-          coveringPosition = edgeProjections.coveringIndexPosition(
-              aql::AttributeNamePath::Type::ToAttribute);
-        } else {
-          coveringPosition = edgeProjections.coveringIndexPosition(
-              aql::AttributeNamePath::Type::FromAttribute);
-        }
-
-        TRI_ASSERT(aql::Projections::isCoveringIndexPosition(coveringPosition));
-      }
+      auto coveringPosition =
+          getCoveringPosition(index, info.direction, monitor);
 
       cursorsForOneCollection.emplace_back(CollectionIndexCursor{
-          index, count, coveringPosition, info.indexCondition,
+          index, infoCount, coveringPosition, info.indexCondition,
           info.conditionNeedUpdate
               ? std::optional<size_t>{info.conditionMemberToUpdate}
               : std::nullopt,
           trx, traverserCache, tmpVar, monitor});
     }
     cursors.emplace_back(std::move(cursorsForOneCollection));
-    count++;
+    infoCount++;
   }
   return cursors;
 }

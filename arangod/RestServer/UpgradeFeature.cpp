@@ -207,15 +207,21 @@ void UpgradeFeature::start() {
 
   // upgrade the database
   if (_upgradeCheck) {
-    if (!ServerState::instance()->isCoordinator()) {
-      // no need to run local upgrades in the coordinator
-      upgradeLocalDatabase();
-    }
-
     auth::UserManager* um =
         server().getFeature<AuthenticationFeature>().userManager();
 
     if (um != nullptr) {
+      if (!ServerState::instance()->isCoordinator()) {
+        if (_upgrade) {
+          // upgradeLocalDatabase can lead to a permission change in some users
+          // e.g. deleting a db will trigger a removal of its rights from a
+          // user. so we need a working UserManager from here on.
+          um->loadUserCacheAndStartUpdateThread();
+        }
+        // no need to run local upgrades in the coordinator
+        upgradeLocalDatabase();
+      }
+
       if (!ServerState::instance()->isCoordinator() && !init.restoreAdmin() &&
           !init.defaultPassword().empty()) {
         // this method sets the root password in case on non-coordinators.
@@ -244,38 +250,39 @@ void UpgradeFeature::start() {
           *_result = EXIT_FAILURE;
         }
       }
-    }
 
-    // change admin user
-    if (init.restoreAdmin() &&
-        ServerState::instance()->isSingleServerOrCoordinator()) {
-      um->loadUserCacheAndStartUpdateThread();
-      Result res = um->removeAllUsers();
-      if (res.fail()) {
-        LOG_TOPIC("70922", ERR, arangodb::Logger::FIXME)
-            << "failed to clear users: " << res.errorMessage();
-        *_result = EXIT_FAILURE;
-        return;
-      }
+      // change admin user
+      if (init.restoreAdmin() &&
+          ServerState::instance()->isSingleServerOrCoordinator()) {
+        um->loadUserCacheAndStartUpdateThread();
+        Result res = um->removeAllUsers();
+        if (res.fail()) {
+          LOG_TOPIC("70922", ERR, arangodb::Logger::FIXME)
+              << "failed to clear users: " << res.errorMessage();
+          *_result = EXIT_FAILURE;
+          return;
+        }
 
-      VPackSlice extras = VPackSlice::noneSlice();
-      res = um->storeUser(true, "root", init.defaultPassword(), true, extras);
-      if (res.is(TRI_ERROR_USER_NOT_FOUND)) {
-        res =
-            um->storeUser(false, "root", init.defaultPassword(), true, extras);
-      }
+        VPackSlice extras = VPackSlice::noneSlice();
+        res = um->storeUser(true, "root", init.defaultPassword(), true, extras);
+        if (res.is(TRI_ERROR_USER_NOT_FOUND)) {
+          res = um->storeUser(false, "root", init.defaultPassword(), true,
+                              extras);
+        }
 
-      if (res.fail()) {
-        LOG_TOPIC("e9637", ERR, arangodb::Logger::FIXME)
-            << "failed to create root user: " << res.errorMessage();
-        *_result = EXIT_FAILURE;
-        return;
+        if (res.fail()) {
+          LOG_TOPIC("e9637", ERR, arangodb::Logger::FIXME)
+              << "failed to create root user: " << res.errorMessage();
+          *_result = EXIT_FAILURE;
+          return;
+        }
+        auto oldLevel = arangodb::Logger::FIXME.level();
+        arangodb::Logger::FIXME.setLogLevel(arangodb::LogLevel::INFO);
+        LOG_TOPIC("95cab", INFO, arangodb::Logger::FIXME)
+            << "Password changed.";
+        arangodb::Logger::FIXME.setLogLevel(oldLevel);
+        *_result = EXIT_SUCCESS;
       }
-      auto oldLevel = arangodb::Logger::FIXME.level();
-      arangodb::Logger::FIXME.setLogLevel(arangodb::LogLevel::INFO);
-      LOG_TOPIC("95cab", INFO, arangodb::Logger::FIXME) << "Password changed.";
-      arangodb::Logger::FIXME.setLogLevel(oldLevel);
-      *_result = EXIT_SUCCESS;
     }
   }
 

@@ -1,6 +1,8 @@
 devel
 -----
 
+* Fix BTS-2212: Moved loadUserCacheAndStartUpdateThread as it was already needed earlier for some of the upgrade tasks.
+
 * Fix unique _key generation in two cases: AQL INSERT operations in a loop
   without user specified _key in collections with exactly one shard or with
   multiple shard, non-standard sharding and `forceOneShardAttributeValue`.

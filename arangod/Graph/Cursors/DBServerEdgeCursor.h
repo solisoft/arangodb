@@ -23,18 +23,21 @@
 
 #pragma once
 
+#include <cstdint>
 #include <string_view>
 #include <vector>
 
+#include "Assertions/Assert.h"
 #include "Graph/Cursors/EdgeCursor.h"
 
 namespace arangodb::graph {
 
 template<typename T>
 concept IndexCursor = requires(T t, EdgeCursor::Callback const& callback,
-                               std::string_view vertex) {
+                               std::string_view vertex, uint64_t batchSize) {
   {t.all(callback)};
   { t.next(callback) } -> std::convertible_to<bool>;
+  { t.nextBatch(callback, batchSize) } -> std::same_as<uint64_t>;
   { t.rearm(vertex) };
 };
 template<IndexCursor T>
@@ -51,11 +54,16 @@ class DBServerEdgeCursor final : public EdgeCursor {
       : _cursors{std::move(cursors)} {}
 
   bool next(EdgeCursor::Callback const& callback) override {
+    return nextBatch(callback, 1);
+  }
+
+  bool nextBatch(EdgeCursor::Callback const& callback,
+                 uint64_t batchSize) override {
     if (_currentCursor == _cursors.size()) {
       return false;
     }
 
-    TRI_ASSERT(_cursors[_currentCursor].size() > _currentSubCursor);
+    uint64_t requiredItems = batchSize;
 
     do {
       if (_cursors[_currentCursor].empty()) {
@@ -63,7 +71,9 @@ class DBServerEdgeCursor final : public EdgeCursor {
           return false;
         }
       } else {
-        if (_cursors[_currentCursor][_currentSubCursor].next(callback)) {
+        requiredItems -= _cursors[_currentCursor][_currentSubCursor].nextBatch(
+            callback, requiredItems);
+        if (requiredItems == 0) {
           return true;
         } else {
           if (!advanceCursor()) {
